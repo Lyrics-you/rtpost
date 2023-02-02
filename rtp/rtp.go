@@ -28,7 +28,7 @@ type RTP struct {
 }
 
 func (rtp *RTP) Decode(playload []byte) error {
-	if len(playload) < 11 {
+	if len(playload) < 12 {
 		return errors.New("can not decode to rtp protocol")
 	}
 	// byte 0
