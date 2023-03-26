@@ -1,17 +1,50 @@
-package stat
+package cycle
 
 import (
 	"fmt"
+	"rtpost/logger"
 	"rtpost/rtp"
 	"strings"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcap"
 )
 
-func PrintPacketInfo(packet gopacket.Packet) {
+// decode_as_entry: udp.port,18089,(none),RExecute
+// decode_as_entry: udp.port,19000,(none),RTP
+// decode_as_entry: udp.port,19600,(none),RTP
+// decode_as_entry: udp.port,19601,(none),RTP
+// decode_as_entry: udp.port,19602,(none),RTP
+// decode_as_entry: udp.port,19603,(none),RTP
+// decode_as_entry: udp.port,19604,(none),RTP
+// decode_as_entry: udp.port,19605,(none),RTP
+// decode_as_entry: udp.port,8089,(none),RTP
+// decode_as_entry: udp.port,9000,(none),RTP
+// decode_as_entry: udp.port,9600,OMRON FINS,RTP
+// decode_as_entry: udp.port,9601,(none),RTP
+// decode_as_entry: udp.port,9602,(none),RTP
+// decode_as_entry: udp.port,9603,(none),RTP
+// decode_as_entry: udp.port,9604,(none),RTP
+// decode_as_entry: udp.port,9605,(none),RTP
+
+// unix: yum install libpcap-devel
+
+var (
+	udpPorts []string = []string{"8089", "8090", "9600", "9601", "9602", "9603", "9604", "9605", "18089", "18090", "19600", "19601", "19602", "19603", "19604", "19605"}
+	handle   *pcap.Handle
+	err      error
+	log      = logger.Logger()
+
+	sllLayer layers.LinuxSLL
+	ethLayer layers.Ethernet
+	ipLayer  layers.IPv4
+	udpLayer layers.UDP
+)
+
+func PrintPacketInfo(packet *gopacket.Packet) {
 	// Let's see if the packet is an ethernet packet
-	ethernetLayer := packet.Layer(layers.LayerTypeEthernet)
+	ethernetLayer := (*packet).Layer(layers.LayerTypeEthernet)
 	if ethernetLayer != nil {
 		fmt.Println("Ethernet layer detected.")
 		ethernetPacket, _ := ethernetLayer.(*layers.Ethernet)
@@ -22,7 +55,7 @@ func PrintPacketInfo(packet gopacket.Packet) {
 		fmt.Println()
 	}
 	// Let's see if the packet is IP (even though the ether type told us)
-	ipLayer := packet.Layer(layers.LayerTypeIPv4)
+	ipLayer := (*packet).Layer(layers.LayerTypeIPv4)
 	if ipLayer != nil {
 		fmt.Println("IPv4 layer detected.")
 		ip, _ := ipLayer.(*layers.IPv4)
@@ -36,7 +69,7 @@ func PrintPacketInfo(packet gopacket.Packet) {
 		fmt.Println()
 	}
 	// Let's see if the packet is TCP
-	tcpLayer := packet.Layer(layers.LayerTypeTCP)
+	tcpLayer := (*packet).Layer(layers.LayerTypeTCP)
 	if tcpLayer != nil {
 		fmt.Println("TCP layer detected.")
 		tcp, _ := tcpLayer.(*layers.TCP)
@@ -48,7 +81,7 @@ func PrintPacketInfo(packet gopacket.Packet) {
 		fmt.Println()
 	}
 	// Let's see if the packet is UDP
-	udpLayer := packet.Layer(layers.LayerTypeUDP)
+	udpLayer := (*packet).Layer(layers.LayerTypeUDP)
 	if udpLayer != nil {
 		fmt.Println("UDP layer detected.")
 		udp, _ := udpLayer.(*layers.UDP)
@@ -58,13 +91,13 @@ func PrintPacketInfo(packet gopacket.Packet) {
 	}
 	// Iterate over all layers, printing out each layer type
 	fmt.Println("All packet layers:")
-	for _, layer := range packet.Layers() {
+	for _, layer := range (*packet).Layers() {
 		fmt.Println("- ", layer.LayerType())
 	}
 	// When iterating through packet.Layers() above,
 	// if it lists Payload layer then that is the same as
 	// this applicationLayer. applicationLayer contains the payload
-	applicationLayer := packet.ApplicationLayer()
+	applicationLayer := (*packet).ApplicationLayer()
 	if applicationLayer != nil {
 		fmt.Println("Application layer/Payload found.")
 		fmt.Printf("%s\n", applicationLayer.Payload())
@@ -74,15 +107,21 @@ func PrintPacketInfo(packet gopacket.Packet) {
 		}
 	}
 	// Check for errors
-	if err := packet.ErrorLayer(); err != nil {
+	if err := (*packet).ErrorLayer(); err != nil {
 		fmt.Println("Error decoding some part of the packet:", err)
 	}
 }
 
-func DecodeLayers(packet gopacket.Packet) *rtp.WireShark {
+func DecodeLayers(packet *gopacket.Packet) *rtp.WireShark {
 	wireshark := rtp.WireShark{}
+
+	// get time from metadata
+	meta := (*packet).Metadata()
+	wireshark.ArrivalTime = meta.Timestamp
+	// fmt.Println(meta.Timestamp)
+
 	// if the packet is an ethernet packet
-	ethernetLayer := packet.Layer(layers.LayerTypeEthernet)
+	ethernetLayer := (*packet).Layer(layers.LayerTypeEthernet)
 	if ethernetLayer != nil {
 		ethernetPacket, _ := ethernetLayer.(*layers.Ethernet)
 		// fmt.Println("Source MAC: ", ethernetPacket.SrcMAC)
@@ -95,15 +134,22 @@ func DecodeLayers(packet gopacket.Packet) *rtp.WireShark {
 	}
 
 	// if the packet is an linux sll packet
-	linuxSllLayer := packet.Layer(layers.LayerTypeLinuxSLL)
+	linuxSllLayer := (*packet).Layer(layers.LayerTypeLinuxSLL)
 	if linuxSllLayer != nil {
 		linuxSllPacket, _ := linuxSllLayer.(*layers.LinuxSLL)
 		wireshark.Length = len(linuxSllPacket.Payload)
 		wireshark.DstMac = linuxSllPacket.Addr.String()
 	}
 
+	// ipLayer := (*packet).Layer(layers.LayerTypeIPv6)
+	// if ipLayer != nil {
+	// 	ip, _ := ipLayer.(*layers.IPv6)
+	// 	fmt.Println(ip.SrcIP.String())
+	// 	fmt.Println(ip.DstIP.String())
+	// }
+
 	// if the packet is IP (even though the ether type told us)
-	ipLayer := packet.Layer(layers.LayerTypeIPv4)
+	ipLayer := (*packet).Layer(layers.LayerTypeIPv4)
 	if ipLayer != nil {
 		ip, _ := ipLayer.(*layers.IPv4)
 		wireshark.Source = ip.SrcIP.String()
@@ -111,7 +157,7 @@ func DecodeLayers(packet gopacket.Packet) *rtp.WireShark {
 	}
 
 	// if the packet is UDP
-	udpLayer := packet.Layer(layers.LayerTypeUDP)
+	udpLayer := (*packet).Layer(layers.LayerTypeUDP)
 	if udpLayer != nil {
 		udp, _ := udpLayer.(*layers.UDP)
 		wireshark.SrcPort = udp.SrcPort.String()
@@ -120,7 +166,7 @@ func DecodeLayers(packet gopacket.Packet) *rtp.WireShark {
 
 	// if it lists Payload layer then that is the same as
 	// this applicationLayer. applicationLayer contains the payload
-	applicationLayer := packet.ApplicationLayer()
+	applicationLayer := (*packet).ApplicationLayer()
 	if applicationLayer != nil {
 		playload := applicationLayer.Payload()
 		rtp := rtp.RTP{}
@@ -130,23 +176,30 @@ func DecodeLayers(packet gopacket.Packet) *rtp.WireShark {
 			wireshark.Info = fmt.Sprintf("%s -> %s Len(%v)", wireshark.SrcPort, wireshark.DstPort, len(playload))
 		}
 		wireshark.Protocol = "RTP"
-		wireshark.SequenceNumber = rtp.SequenceNumber
+		// wireshark.SequenceNumber = rtp.SequenceNumber
+		// wireshark.Timestamp = rtp.Timestamp
+		wireshark.RtpPacket = &rtp
 		wireshark.Info = rtp.ToWireSharkString()
 	}
 	return &wireshark
 }
 
-func ParsePackets(packet gopacket.Packet) *rtp.WireShark {
+func ParsePackets(packet *gopacket.Packet) *rtp.WireShark {
 	wireshark := rtp.WireShark{}
+
+	// get time from metadata
+	meta := (*packet).Metadata()
+	wireshark.ArrivalTime = meta.Timestamp
+
 	var parser *gopacket.DecodingLayerParser
-	if packet.Layers()[0].LayerType() == layers.LayerTypeLinuxSLL {
+	if (*packet).Layers()[0].LayerType() == layers.LayerTypeLinuxSLL {
 		parser = gopacket.NewDecodingLayerParser(
 			layers.LayerTypeLinuxSLL,
 			&sllLayer,
 			&ipLayer,
 			&udpLayer,
 		)
-	} else if packet.Layers()[0].LayerType() == layers.LayerTypeEthernet {
+	} else if (*packet).Layers()[0].LayerType() == layers.LayerTypeEthernet {
 		parser = gopacket.NewDecodingLayerParser(
 			layers.LayerTypeEthernet,
 			&ethLayer,
@@ -156,7 +209,7 @@ func ParsePackets(packet gopacket.Packet) *rtp.WireShark {
 	}
 
 	foundLayerTypes := []gopacket.LayerType{}
-	err := parser.DecodeLayers(packet.Data(), &foundLayerTypes)
+	err := parser.DecodeLayers((*packet).Data(), &foundLayerTypes)
 	for _, layerType := range foundLayerTypes {
 		if layerType == layers.LayerTypeLinuxSLL {
 			// fmt.Println("Linux SLL Addr: ", sllLayer.Addr)
@@ -190,7 +243,7 @@ func ParsePackets(packet gopacket.Packet) *rtp.WireShark {
 	if err != nil {
 		// fmt.Println("Trouble decoding layers: ", err)
 
-		applicationLayer := packet.ApplicationLayer()
+		applicationLayer := (*packet).ApplicationLayer()
 		if applicationLayer != nil {
 			playload := applicationLayer.Payload()
 			// fmt.Println("Playload Content: ", hex.EncodeToString(playload))
@@ -203,28 +256,89 @@ func ParsePackets(packet gopacket.Packet) *rtp.WireShark {
 				wireshark.Info = fmt.Sprintf("%s -> %s Len(%v)", wireshark.SrcPort, wireshark.DstPort, len(playload))
 			}
 			wireshark.Protocol = "RTP"
-			wireshark.SequenceNumber = rtp.SequenceNumber
+			// wireshark.RtpPacket.SequenceNumber = rtp.SequenceNumber
+			// wireshark.Timestamp = rtp.Timestamp
+			wireshark.RtpPacket = &rtp
 			wireshark.Info = rtp.ToWireSharkString()
 		}
 	}
 	return &wireshark
 }
 
-// decode_as_entry: udp.port,18089,(none),RExecute
-// decode_as_entry: udp.port,19000,(none),RTP
-// decode_as_entry: udp.port,19600,(none),RTP
-// decode_as_entry: udp.port,19601,(none),RTP
-// decode_as_entry: udp.port,19602,(none),RTP
-// decode_as_entry: udp.port,19603,(none),RTP
-// decode_as_entry: udp.port,19604,(none),RTP
-// decode_as_entry: udp.port,19605,(none),RTP
-// decode_as_entry: udp.port,8089,(none),RTP
-// decode_as_entry: udp.port,9000,(none),RTP
-// decode_as_entry: udp.port,9600,OMRON FINS,RTP
-// decode_as_entry: udp.port,9601,(none),RTP
-// decode_as_entry: udp.port,9602,(none),RTP
-// decode_as_entry: udp.port,9603,(none),RTP
-// decode_as_entry: udp.port,9604,(none),RTP
-// decode_as_entry: udp.port,9605,(none),RTP
+func printAllPacketsInfo(rwp *rtp.WirePackets) {
+	for _, pkt := range *rwp {
+		fmt.Println(pkt.ToString())
+	}
+}
 
-// unix: yum install libpcap-devel
+func printAllGroupPacketsInfo(rwpg *[]*rtp.WirePackets) {
+	for _, rwp := range *rwpg {
+		printAllPacketsInfo(rwp)
+	}
+}
+
+func DoDecode(pcapFile, rtpSsrc, rtpCsrc string) (*rtp.WirePackets, *rtp.WirePackets) {
+	// start := time.Now()
+
+	// Open file instead of device
+	handle, err = pcap.OpenOffline(pcapFile)
+	if err != nil {
+		// log.Fatal(err)
+		log.Errorf("pcap.OpenOffline error, %v", err)
+		return nil, nil
+	}
+	defer handle.Close()
+
+	// Loop through packets in file
+	// packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+	var srcPacket []*rtp.WireShark
+	var dstPacket []*rtp.WireShark
+
+	for packet := range packetSource.Packets() {
+		// wireshark := ParsePackets(packet)
+		// faster
+		// fmt.Println(packet)
+
+		wireshark := DecodeLayers(&packet)
+		if wireshark.RtpPacket == nil {
+			continue
+		}
+		if rtpSsrc == "" && rtpCsrc == "" {
+			if wireshark.SrcInPorts(udpPorts) {
+				srcPacket = append(srcPacket, wireshark)
+			} else if wireshark.DstInPorts(udpPorts) {
+				dstPacket = append(dstPacket, wireshark)
+			}
+		}
+
+		if rtpSsrc != "" && rtpCsrc == "" && wireshark.HasRtpSsrc(rtpSsrc) {
+			if wireshark.SrcInPorts(udpPorts) {
+				srcPacket = append(srcPacket, wireshark)
+			} else if wireshark.DstInPorts(udpPorts) {
+				dstPacket = append(dstPacket, wireshark)
+			}
+		}
+
+		if rtpSsrc == "" && rtpCsrc != "" && wireshark.HasRtpCsrc(rtpCsrc) {
+			if wireshark.SrcInPorts(udpPorts) {
+				srcPacket = append(srcPacket, wireshark)
+			} else if wireshark.DstInPorts(udpPorts) {
+				dstPacket = append(dstPacket, wireshark)
+			}
+		}
+
+		if rtpSsrc != "" && rtpCsrc != "" && wireshark.HasRtpSsrc(rtpSsrc) && wireshark.HasRtpCsrc(rtpCsrc) {
+			if wireshark.SrcInPorts(udpPorts) {
+				srcPacket = append(srcPacket, wireshark)
+			} else if wireshark.DstInPorts(udpPorts) {
+				dstPacket = append(dstPacket, wireshark)
+			}
+		}
+
+		// printPacketInfo(packet)
+	}
+	// cost := time.Since(start)
+	// fmt.Printf("执行时间: %v\n", cost)
+	return (*rtp.WirePackets)(&dstPacket), (*rtp.WirePackets)(&srcPacket)
+}
